@@ -46,7 +46,7 @@ func TestProofGenerationTwoLeaves(t *testing.T) {
 
 	var s bls.Fr
 	bls.SetFr(&s, "1927409816240961209460912649124")
-	d, y, sigma := MakeVerkleProofOneLeaf(root, zeroKeyTest)
+	d, y, sigma := MakeVerkleProof(root, [][]byte{zeroKeyTest})
 
 	expectedD := common.Hex2Bytes("af768e1ff778c322455f0c4159d99f516cb944c6e87da099fa8c402cfda53001bd6417a185a179f2012d2e3ba780ca1b")
 
@@ -89,9 +89,9 @@ func TestProofVerifyTwoLeaves(t *testing.T) {
 	// Calculate all commitments
 	root.ComputeCommitment()
 
-	d, y, sigma := MakeVerkleProofOneLeaf(root, zeroKeyTest)
+	d, y, sigma := MakeVerkleProof(root, [][]byte{zeroKeyTest})
 
-	comms, zis, yis, _ := root.GetCommitmentsAlongPath(zeroKeyTest)
+	comms, zis, yis, _ := root.GetCommitmentsAlongPaths([][]byte{zeroKeyTest})
 	if !VerifyVerkleProof(ks, d, sigma, y, comms, zis, yis, tc) {
 		t.Fatal("could not verify verkle proof")
 	}
@@ -125,7 +125,7 @@ func BenchmarkProofCalculation(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		MakeVerkleProofOneLeaf(root, keys[len(keys)/2])
+		MakeVerkleProof(root, [][]byte{keys[len(keys)/2]})
 	}
 }
 
@@ -160,8 +160,8 @@ func BenchmarkProofVerification(b *testing.B) {
 	// Calculate all commitments
 	root.ComputeCommitment()
 
-	comms, zis, yis, _ := root.GetCommitmentsAlongPath(keys[len(keys)/2])
-	d, y, sigma := MakeVerkleProofOneLeaf(root, keys[len(keys)/2])
+	comms, zis, yis, _ := root.GetCommitmentsAlongPaths(keys[len(keys)/2 : len(keys)/2+1])
+	d, y, sigma := MakeVerkleProof(root, [][]byte{keys[len(keys)/2]})
 
 	b.ResetTimer()
 	b.ReportAllocs()

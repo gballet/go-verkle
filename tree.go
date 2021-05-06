@@ -68,11 +68,11 @@ type VerkleNode interface {
 	// commitment of a node.
 	GetCommitment() *bls.G1Point
 
-	// GetCommitmentAlongPath follows the path that one key
-	// traces through the tree, and collects the various
+	// GetCommitmentAlongPaths follows the path traced
+	// by keys through the tree, and collects the various
 	// elements needed to build a proof. The order of elements
 	// is from the bottom of the tree, up to the root.
-	GetCommitmentsAlongPath([]byte) ([]*bls.G1Point, []*bls.Fr, []*bls.Fr, [][]bls.Fr)
+	GetCommitmentsAlongPaths([][]byte) ([]*bls.G1Point, []*bls.Fr, []*bls.Fr, [][]bls.Fr)
 
 	// Serialize encodes the node to RLP.
 	Serialize() ([]byte, error)
@@ -443,9 +443,9 @@ func (n *InternalNode) GetCommitment() *bls.G1Point {
 	return n.commitment
 }
 
-func (n *InternalNode) GetCommitmentsAlongPath(key []byte) ([]*bls.G1Point, []*bls.Fr, []*bls.Fr, [][]bls.Fr) {
-	childIdx := Offset2Key(key, n.depth, n.treeConfig.width)
-	comms, zis, yis, fis := n.children[childIdx].GetCommitmentsAlongPath(key)
+func (n *InternalNode) getCommitmentsAlongPath(keys [][]byte) ([]*bls.G1Point, []*bls.Fr, []*bls.Fr, [][]bls.Fr) {
+	childIdx := Offset2Key(keys[0], n.depth, n.treeConfig.width)
+	comms, zis, yis, fis := n.children[childIdx].GetCommitmentsAlongPaths(keys)
 	var zi, yi bls.Fr
 	bls.AsFr(&zi, uint64(childIdx))
 	fi := make([]bls.Fr, n.treeConfig.nodeWidth)
@@ -456,6 +456,22 @@ func (n *InternalNode) GetCommitmentsAlongPath(key []byte) ([]*bls.G1Point, []*b
 		}
 	}
 	return append(comms, n.GetCommitment()), append(zis, &zi), append(yis, &yi), append(fis, fi[:])
+}
+
+func (n *InternalNode) GetCommitmentsAlongPaths(keys [][]byte) ([]*bls.G1Point, []*bls.Fr, []*bls.Fr, [][]bls.Fr) {
+	var (
+		zis, yis []*bls.Fr
+		fis      [][]bls.Fr
+		comms    []*bls.G1Point
+	)
+	for _, key := range keys {
+		cs, zs, ys, fs := n.getCommitmentsAlongPath([][]byte{key})
+		comms = append(comms, cs...)
+		zis = append(zis, zs...)
+		yis = append(yis, ys...)
+		fis = append(fis, fs...)
+	}
+	return comms, zis, yis, fis
 }
 
 func (n *InternalNode) Serialize() ([]byte, error) {
@@ -544,7 +560,7 @@ func (n *LeafNode) GetCommitment() *bls.G1Point {
 	panic("can't get the commitment directly")
 }
 
-func (n *LeafNode) GetCommitmentsAlongPath(key []byte) ([]*bls.G1Point, []*bls.Fr, []*bls.Fr, [][]bls.Fr) {
+func (n *LeafNode) GetCommitmentsAlongPaths([][]byte) ([]*bls.G1Point, []*bls.Fr, []*bls.Fr, [][]bls.Fr) {
 	return nil, nil, nil, nil
 }
 
@@ -599,7 +615,7 @@ func (n *HashedNode) GetCommitment() *bls.G1Point {
 	return n.commitment
 }
 
-func (n *HashedNode) GetCommitmentsAlongPath(key []byte) ([]*bls.G1Point, []*bls.Fr, []*bls.Fr, [][]bls.Fr) {
+func (n *HashedNode) GetCommitmentsAlongPaths([][]byte) ([]*bls.G1Point, []*bls.Fr, []*bls.Fr, [][]bls.Fr) {
 	panic("can not get the full path, and there is no proof of absence")
 }
 
@@ -641,7 +657,7 @@ func (e Empty) GetCommitment() *bls.G1Point {
 	return &bls.ZeroG1
 }
 
-func (e Empty) GetCommitmentsAlongPath(key []byte) ([]*bls.G1Point, []*bls.Fr, []*bls.Fr, [][]bls.Fr) {
+func (e Empty) GetCommitmentsAlongPaths([][]byte) ([]*bls.G1Point, []*bls.Fr, []*bls.Fr, [][]bls.Fr) {
 	panic("trying to produce a commitment for an empty subtree")
 }
 

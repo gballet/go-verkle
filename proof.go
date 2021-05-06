@@ -90,7 +90,7 @@ func ComputeKZGProof(tc *TreeConfig, poly []bls.Fr, z, y *bls.Fr) *bls.G1Point {
 	return kzg.CommitToEvalPoly(tc.lg1, oq)
 }
 
-func MakeVerkleProofOneLeaf(root VerkleNode, key []byte) (d *bls.G1Point, y *bls.Fr, sigma *bls.G1Point) {
+func MakeVerkleProof(root VerkleNode, keys [][]byte) (d *bls.G1Point, y *bls.Fr, sigma *bls.G1Point) {
 	var tc *TreeConfig
 	if root, ok := root.(*InternalNode); !ok {
 		panic("no tree config")
@@ -99,7 +99,7 @@ func MakeVerkleProofOneLeaf(root VerkleNode, key []byte) (d *bls.G1Point, y *bls
 	}
 
 	var fis [][]bls.Fr
-	commitments, zis, yis, fis := root.GetCommitmentsAlongPath(key)
+	commitments, zis, yis, fis := root.GetCommitmentsAlongPaths(keys)
 
 	// Construct g(x)
 	r := calcR(commitments, zis, yis, tc.modulus)
