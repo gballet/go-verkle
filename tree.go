@@ -444,26 +444,11 @@ func (n *InternalNode) Hash() common.Hash {
 // This piece of code is really ugly, and probably a performance hog, it
 // needs to be rewritten more efficiently.
 func hashToFr(out *bls.Fr, h [32]byte, modulus *big.Int) {
-	var h2 [32]byte
-	// reverse endianness
-	for i := range h {
-		h2[i] = h[len(h)-i-1]
-	}
+	// set first byte to 0 so as not to have to calculate the modulus
 
-	// Apply modulus
-	x := big.NewInt(0).SetBytes(h2[:])
-	x.Mod(x, modulus)
 
-	// clear the buffer in case the trailing bytes were 0
-	for i := 0; i < 32; i++ {
-		h2[i] = 0
-	}
-	copy(h2[32-len(x.Bytes()):], x.Bytes())
 
-	// back to original endianness
-	for i := range h2 {
-		h[i] = h2[len(h)-i-1]
-	}
+	h[31] = 0
 
 	if !bls.FrFrom32(out, h) {
 		panic(fmt.Sprintf("invalid Fr number %x", h))
