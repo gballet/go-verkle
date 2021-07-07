@@ -925,3 +925,53 @@ func isLeafEqual(a, b *LeafNode) bool {
 
 	return true
 }
+
+func TestAccountLeafAccessEOA(t *testing.T) {
+	tree := New(8)
+	tree.CreateAccount(zeroKeyTest, 42, 1024, 0, big.NewInt(100), common.BytesToHash(emptyCodeHash))
+
+	version, err := tree.Get(zeroKeyTest, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(version, []byte{0, 0, 0, 0, 0, 0, 0, 42}) {
+		t.Fatalf("invalid version %x != 42", version)
+	}
+
+	key := make([]byte, 32)
+	key[31] = accountLeafNonce
+	nonce, err := tree.Get(key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(nonce, []byte{0, 0, 0, 0, 0, 0, 4, 0}) {
+		t.Fatalf("invalid nonce %x != 1024", nonce)
+	}
+
+	key[31] = accountLeafBalance
+	balance, err := tree.Get(key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(balance, []byte{100}) {
+		t.Fatalf("invalid balance %v != [100]", balance)
+	}
+
+	key[31] = accountLeafCodeSize
+	codeSize, err := tree.Get(key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(codeSize, []byte{0, 0, 0, 0, 0, 0, 0, 0}) {
+		t.Fatalf("invalid balance %v != [0]", codeSize)
+	}
+
+	key[31] = accountLeafCodeHash
+	codeHash, err := tree.Get(key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(codeHash, emptyCodeHash) {
+		t.Fatalf("invalid balance %v != [0]", codeHash)
+	}
+}

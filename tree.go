@@ -27,6 +27,7 @@ package verkle
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/big"
@@ -48,6 +49,9 @@ type VerkleNode interface {
 	// hashes for each subtrie are computed online, as soon as it
 	// is clear that no more values will be inserted in there.
 	InsertOrdered([]byte, []byte, NodeFlushFn) error
+
+	// Adds an account to the tree
+	CreateAccount([]byte, uint64, uint64, uint64, *big.Int, common.Hash) error
 
 	// Delete a leaf with the given key
 	Delete([]byte) error
@@ -112,6 +116,20 @@ type (
 	HashedNode struct {
 		hash       common.Hash
 		commitment *bls.G1Point
+	}
+
+	AccountLeaf struct {
+		LeafNode
+
+		Version  uint64
+		Balance  *big.Int
+		Nonce    uint64
+		CodeSize uint64
+		CodeHash common.Hash
+
+		commitment *bls.G1Point
+
+		treeConfig *TreeConfig
 	}
 
 	LeafNode struct {
@@ -424,7 +442,7 @@ func (n *InternalNode) Get(k []byte, getter NodeResolverFn) ([]byte, error) {
 		n.children[nChild] = c
 
 		return c.Get(k, getter)
-	default: // InternalNode
+	default: // InternalNode, [Account]Leaf
 		return child.Get(k, getter)
 	}
 }
@@ -552,6 +570,167 @@ func (n *InternalNode) clearCache() {
 	n.commitment = nil
 }
 
+func (n *InternalNode) CreateAccount(key []byte, version, nonce, codeSize uint64, balance *big.Int, codeHash common.Hash) error {
+	nChild := Offset2Key(key, n.depth, n.treeConfig.width)
+
+	switch child := n.children[nChild].(type) {
+	case *LeafNode, *HashedNode, nil:
+		return errors.New("trying to create an account in an invalid subtree")
+	case Empty:
+		n.children[nChild] = &AccountLeaf{
+			LeafNode: LeafNode{key: key},
+			Version:  version,
+			Balance:  balance,
+			Nonce:    nonce,
+			CodeSize: codeSize,
+			CodeHash: codeHash,
+		}
+		return nil
+	case *AccountLeaf:
+		// Insert an intermediate node
+		newBranch := newInternalNode(n.depth+n.treeConfig.width, n.treeConfig).(*InternalNode)
+
+		nExisting := Offset2Key(child.key, n.depth+1, n.treeConfig.width)
+		nNew := Offset2Key(key, n.depth+1, n.treeConfig.width)
+
+		newBranch.children[nExisting] = child
+
+		if nExisting != nNew {
+			// Both the current account node and the inserted
+			// one share the same key segment. Introduce an
+			// intermediate node and recurse.
+			n.children[nChild] = newBranch
+			return newBranch.CreateAccount(key, version, nonce, codeSize, balance, codeHash)
+		}
+
+		// The new branch is the first differing branch, set both of them
+		// in their own slot.
+		n.children[nNew] = new(AccountLeaf)
+		return n.children[nNew].CreateAccount(key, version, nonce, codeSize, balance, codeHash)
+	default:
+		return child.CreateAccount(key, version, nonce, codeSize, balance, codeHash)
+	}
+}
+
+const (
+	accountLeafVersion = iota
+	accountLeafBalance
+	accountLeafNonce
+	accountLeafCodeHash
+	accountLeafCodeSize
+)
+
+func (n *AccountLeaf) Insert(k []byte, value []byte) error {
+	// The parent insert is expected to ensure that this
+	// situation doesn't occur. This check will catch an
+	// invalid situation while the library stabilizes.
+	if !bytes.Equal(k[:31], n.key[:31]) {
+		return errors.New("inserting invalid key into key")
+	}
+
+	switch k[31] {
+	case accountLeafBalance:
+		n.Balance.SetBytes(value)
+		n.commitment = nil // invalidate commitment
+	case accountLeafNonce:
+		n.Nonce = binary.BigEndian.Uint64(value)
+		n.commitment = nil // invalidate commitment
+	default:
+		return errors.New("writing to read-only location")
+	}
+	return nil
+}
+
+func (n *AccountLeaf) CreateAccount(k []byte, version, nonce, codeSize uint64, balance *big.Int, codeHash common.Hash) error {
+	return errors.New("creating over an already exisiting account")
+}
+
+func (n *AccountLeaf) InsertOrdered(key []byte, value []byte, flush chan FlushableNode) error {
+	err := n.Insert(key, value)
+	if err != nil && flush != nil {
+		flush <- FlushableNode{n.Hash(), n}
+	}
+	return err
+}
+
+func (n *AccountLeaf) Get(k []byte, resolver NodeResolverFn) ([]byte, error) {
+	if !bytes.Equal(k[:31], n.key[:31]) {
+		return nil, errValueNotPresent
+	}
+
+	switch k[31] {
+	case accountLeafVersion:
+		var ret [8]byte
+		binary.BigEndian.PutUint64(ret[:], n.Version)
+		return ret[:], nil
+	case accountLeafBalance:
+		return n.Balance.Bytes(), nil
+	case accountLeafNonce:
+		var ret [8]byte
+		binary.BigEndian.PutUint64(ret[:], n.Nonce)
+		return ret[:], nil
+	case accountLeafCodeHash:
+		return n.CodeHash[:], nil
+	case accountLeafCodeSize:
+		var ret [8]byte
+		binary.BigEndian.PutUint64(ret[:], n.CodeSize)
+		return ret[:], nil
+	default:
+		return nil, errValueNotPresent
+	}
+}
+
+func (n *AccountLeaf) ComputeCommitment() *bls.G1Point {
+	// TODO only allocate if the thing isn't already
+	// allocated. Otherwise, just overwrite it.
+	n.commitment = new(bls.G1Point)
+	bls.CopyG1(n.commitment, &bls.ZERO_G1)
+
+	// Build the polynomial based on the account information
+	var poly [5]bls.Fr
+	bls.AsFr(&poly[0], n.Version)
+	var data [32]byte
+	n.Balance.FillBytes(data[:])
+	hashToFr(&poly[1], data, n.treeConfig.modulus)
+	bls.AsFr(&poly[2], n.Nonce)
+	hashToFr(&poly[3], n.CodeHash, n.treeConfig.modulus)
+	bls.AsFr(&poly[4], n.CodeSize)
+
+	for i := range poly {
+		if !bls.EqualZero(&poly[i]) {
+			var eval bls.G1Point
+			bls.MulG1(&eval, &n.treeConfig.lg1[i], &poly[i])
+			bls.AddG1(n.commitment, n.commitment, &eval)
+		}
+	}
+
+	return n.commitment
+}
+
+func (n *AccountLeaf) GetCommitment() *bls.G1Point {
+	return n.commitment
+}
+
+func (n *AccountLeaf) GetCommitmentsAlongPath(key []byte) ([]*bls.G1Point, []*bls.Fr, []*bls.Fr, [][]bls.Fr) {
+	return nil, nil, nil, nil
+}
+
+func (n *AccountLeaf) Hash() common.Hash {
+	h := sha256.Sum256(bls.ToCompressedG1(n.ComputeCommitment()))
+	return common.BytesToHash(h[:])
+}
+
+func (n *AccountLeaf) Serialize() ([]byte, error) {
+	return rlp.EncodeToBytes(struct {
+		k []byte
+		v uint64
+		b *big.Int
+		m uint64
+		h []byte
+		s uint64
+	}{n.key, n.Version, n.Balance, n.Nonce, n.CodeHash[:], n.CodeSize})
+}
+
 func (n *LeafNode) Insert(k []byte, value []byte) error {
 	// Sanity check: ensure the key header is the same:
 	if !n.treeConfig.equalPaths(k, n.key) {
@@ -588,6 +767,10 @@ func lastSlot(width int, key []byte) int {
 	default:
 		panic("invalid width")
 	}
+}
+
+func (n *LeafNode) CreateAccount(key []byte, version, nonce, codeSize uint64, balance *big.Int, codeHash common.Hash) error {
+	return errors.New("inserting an account node in a storage leaf")
 }
 
 func (n *LeafNode) Get(k []byte, _ NodeResolverFn) ([]byte, error) {
@@ -665,6 +848,10 @@ func (n *HashedNode) Delete(k []byte) error {
 	return errors.New("cant delete a hashed node in-place")
 }
 
+func (n *HashedNode) CreateAccount(key []byte, version, nonce, codeSize uint64, balance *big.Int, codeHash common.Hash) error {
+	return errors.New("inserting an account node in a hash node")
+}
+
 func (n *HashedNode) Get(k []byte, _ NodeResolverFn) ([]byte, error) {
 	return nil, errors.New("can not read from a hash node")
 }
@@ -713,6 +900,10 @@ func (e Empty) InsertOrdered(key []byte, value []byte, _ NodeFlushFn) error {
 
 func (e Empty) Delete(k []byte) error {
 	return errors.New("cant delete an empty node")
+}
+
+func (e Empty) CreateAccount(key []byte, version, nonce, codeSize uint64, balance *big.Int, codeHash common.Hash) error {
+	return errors.New("inserting an account node directly into an empty node")
 }
 
 func (e Empty) Get(k []byte, _ NodeResolverFn) ([]byte, error) {
