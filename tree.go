@@ -29,7 +29,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -293,7 +292,7 @@ func (n *InternalNode) InsertOrdered(key []byte, value []byte, flush NodeFlushFn
 				h := child.Hash()
 				comm := new(bls.G1Point)
 				var tmp bls.Fr
-				hashToFr(&tmp, h, n.treeConfig.modulus)
+				hashToFr(&tmp, h)
 				bls.MulG1(comm, &bls.GenG1, &tmp)
 				if flush != nil {
 					flush(child)
@@ -439,29 +438,125 @@ func (n *InternalNode) Hash() common.Hash {
 // sure that this doesn't overflow the modulus.
 // This piece of code is really ugly, and probably a performance hog, it
 // needs to be rewritten more efficiently.
-func hashToFr(out *bls.Fr, h [32]byte, modulus *big.Int) {
+func hashToFr(out *bls.Fr, h [32]byte) {
 	h[31] &= 0x7F // mod 2^255
 
-	// reverse endianness (little -> big)
-	for i := 0; i < len(h)/2; i++ {
-		t := h[i]
-		h[i] = h[len(h)-i-1]
-		h[len(h)-i-1] = t
+	var x, y [4]uint64
+	var t uint64 // temporary
+	var b uint64 // borrow
+
+	// m
+	const m3 uint64 = 0x73EDA753299D7D48
+	const m2 uint64 = 0x3339D80809A1D805
+	const m1 uint64 = 0x53BDA402FFFE5BFE
+	const m0 uint64 = 0xFFFFFFFF00000001
+
+	// 2m
+	const d3 uint64 = 0xE7DB4EA6533AFA90
+	const d2 uint64 = 0x6673B0101343B00A
+	const d1 uint64 = 0xA77B4805FFFCB7FD
+	const d0 uint64 = 0xFFFFFFFE00000002
+
+	// Turn slice into array of words
+
+	for i := 0; i < 4; i++ {
+		t = uint64(h[8*i+7])
+		t <<= 8
+		t |= uint64(h[8*i+6])
+		t <<= 8
+		t |= uint64(h[8*i+5])
+		t <<= 8
+		t |= uint64(h[8*i+4])
+		t <<= 8
+		t |= uint64(h[8*i+3])
+		t <<= 8
+		t |= uint64(h[8*i+2])
+		t <<= 8
+		t |= uint64(h[8*i+1])
+		t <<= 8
+		t |= uint64(h[8*i+0])
+		x[i] = t
 	}
 
-	// Apply modulus
-	x := big.NewInt(0).SetBytes(h[:])
-	x.Mod(x, modulus)
+	// Reduce
 
-	// clear the buffer in case the trailing bytes were 0
-	for i := 0; i < 32; i++ {
-		h[i] = 0
+	y[0] = x[0] - d0
+	if y[0] > x[0] {
+		b = 1
+	} else {
+		b = 0
+	}
+	y[1] = x[1] - d1 - b
+	if y[1] > x[1] {
+		b = 1
+	} else {
+		b = 0
+	}
+	y[2] = x[2] - d2 - b
+	if y[2] > x[2] {
+		b = 1
+	} else {
+		b = 0
+	}
+	y[3] = x[3] - d3 - b
+	if y[3] > x[3] {
+		b = 1
+	} else {
+		b = 0
 	}
 
-	// back to original endianness
-	converted := x.Bytes()
-	for i := 0; i < len(converted); i++ {
-		h[i] = converted[len(converted)-i-1]
+	if b == 0 {
+		x = y
+	}
+
+	y[0] = x[0] - m0
+	if y[0] > x[0] {
+		b = 1
+	} else {
+		b = 0
+	}
+	y[1] = x[1] - m1 - b
+	if y[1] > x[1] {
+		b = 1
+	} else {
+		b = 0
+	}
+	y[2] = x[2] - m2 - b
+	if y[2] > x[2] {
+		b = 1
+	} else {
+		b = 0
+	}
+	y[3] = x[3] - m3 - b
+	if y[3] > x[3] {
+		b = 1
+	} else {
+		b = 0
+	}
+
+	if b == 0 {
+		x = y
+	}
+
+	// Overwrite slice with reduced value
+
+	for i := 0; i < 4; i++ {
+		t = x[i]
+		h[8*i+0] = uint8(t)
+		t >>= 8
+		h[8*i+1] = uint8(t)
+		t >>= 8
+		h[8*i+2] = uint8(t)
+		t >>= 8
+		h[8*i+3] = uint8(t)
+		t >>= 8
+		h[8*i+4] = uint8(t)
+		t >>= 8
+		h[8*i+5] = uint8(t)
+		t >>= 8
+		h[8*i+6] = uint8(t)
+		t >>= 8
+		h[8*i+7] = uint8(t)
 	}
 
 	if !bls.FrFrom32(out, h) {
@@ -481,10 +576,10 @@ func (n *InternalNode) ComputeCommitment() *bls.G1Point {
 		case Empty:
 			emptyChildren++
 		case *LeafNode, *HashedNode:
-			hashToFr(&poly[idx], child.Hash(), n.treeConfig.modulus)
+			hashToFr(&poly[idx], child.Hash())
 		default:
 			compressed := bls.ToCompressedG1(childC.ComputeCommitment())
-			hashToFr(&poly[idx], sha256.Sum256(compressed), n.treeConfig.modulus)
+			hashToFr(&poly[idx], sha256.Sum256(compressed))
 		}
 	}
 
@@ -499,7 +594,7 @@ func (n *InternalNode) GetCommitmentsAlongPath(key []byte) ([]*bls.G1Point, []*b
 	bls.AsFr(&zi, uint64(childIdx))
 	fi := make([]bls.Fr, n.treeConfig.nodeWidth)
 	for i, child := range n.children {
-		hashToFr(&fi[i], child.Hash(), n.treeConfig.modulus)
+		hashToFr(&fi[i], child.Hash())
 		if i == int(childIdx) {
 			bls.CopyFr(&yi, &fi[i])
 		}
@@ -615,7 +710,7 @@ func (n *LeafNode) ComputeCommitment() *bls.G1Point {
 			continue
 		}
 		h := sha256.Sum256(val)
-		hashToFr(&poly[idx], h, n.treeConfig.modulus)
+		hashToFr(&poly[idx], h)
 	}
 
 	n.commitment = n.treeConfig.evalPoly(poly, emptyChildren)
@@ -676,7 +771,7 @@ func (n *HashedNode) Hash() common.Hash {
 func (n *HashedNode) ComputeCommitment() *bls.G1Point {
 	if n.commitment == nil {
 		var hashAsFr bls.Fr
-		hashToFr(&hashAsFr, n.hash, big.NewInt(0))
+		hashToFr(&hashAsFr, n.hash)
 		n.commitment = new(bls.G1Point)
 		bls.MulG1(n.commitment, &bls.GenG1, &hashAsFr)
 	}

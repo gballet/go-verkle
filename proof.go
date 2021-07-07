@@ -50,7 +50,7 @@ func calcR(cs []*bls.G1Point, indices []*bls.Fr, ys []*bls.Fr, modulus *big.Int)
 	}
 
 	var tmp bls.Fr
-	hashToFr(&tmp, common.BytesToHash(digest.Sum(nil)), modulus)
+	hashToFr(&tmp, common.BytesToHash(digest.Sum(nil)))
 	return tmp
 
 }
@@ -64,7 +64,7 @@ func calcT(r *bls.Fr, d *bls.G1Point, modulus *big.Int) bls.Fr {
 	digest.Write(tmpBytes[:])
 
 	var tmp bls.Fr
-	hashToFr(&tmp, common.BytesToHash(digest.Sum(nil)), modulus)
+	hashToFr(&tmp, common.BytesToHash(digest.Sum(nil)))
 	return tmp
 }
 
@@ -81,7 +81,7 @@ func calcQ(e, d *bls.G1Point, y, w *bls.Fr, modulus *big.Int) bls.Fr {
 	digest.Write(tmpBytes[:])
 
 	var tmp bls.Fr
-	hashToFr(&tmp, common.BytesToHash(digest.Sum(nil)), modulus)
+	hashToFr(&tmp, common.BytesToHash(digest.Sum(nil)))
 	return tmp
 }
 
