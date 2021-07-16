@@ -70,7 +70,7 @@ func GetTreeConfig(width int) *TreeConfig {
 	// Hardcode the secret to simplify the API for the
 	// moment.
 	var s bls.Fr
-	bls.SetFr(&s, "1927409816240961209460912649124")
+	bls.SetFr(&s, "8927347823478352432985")
 
 	var sPow bls.Fr
 	bls.CopyFr(&sPow, &bls.ONE)
